@@ -1,0 +1,15 @@
+/target/
+/dist/
+/poppler/
+/share/
+/rozdelene-fotky*/
+*.part
+*.ready.json
+orientacia-kontrola.json
+kontrola.html
+plan.json
+*.pdf
+*.jpg
+*.jpeg
+*.png
+*.zip
