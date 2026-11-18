@@ -145,7 +145,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "foto-delic"
+name = "photo-splitter"
 version = "0.1.0"
 dependencies = [
  "anyhow",

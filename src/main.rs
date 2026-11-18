@@ -1,4 +1,5 @@
 #![cfg_attr(all(windows, not(debug_assertions)), windows_subsystem = "windows")]
+mod language;
 mod orientation;
 use anyhow::{bail, Context, Result};
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -10,6 +11,16 @@ use std::{
     process::Command,
 };
 
+macro_rules! local_bail {
+    ($en:literal,$sk:literal $(,$args:expr)* $(,)?)=>{
+        if language::code()=="sk" {bail!($sk $(,$args)*);}else{bail!($en $(,$args)*);}
+    };
+}
+macro_rules! local_println {
+    ($en:literal,$sk:literal $(,$args:expr)* $(,)?)=>{
+        if language::code()=="sk" {println!($sk $(,$args)*);}else{println!($en $(,$args)*);}
+    };
+}
 #[derive(Clone, Debug, Serialize, Deserialize)]
 struct Photo {
     corners: [[f64; 2]; 4],
@@ -211,7 +222,7 @@ fn dist(a: [f64; 2], b: [f64; 2]) -> f64 {
 fn crop(src: &RgbImage, p: &Photo) -> Result<RgbImage> {
     let c = p.corners;
     if ![0, 90, 180, 270].contains(&p.rotation) {
-        bail!("Neplatne otocenie");
+        local_bail!("Invalid rotation", "Neplatne otocenie");
     }
     for a in c {
         if !a[0].is_finite()
@@ -221,7 +232,7 @@ fn crop(src: &RgbImage, p: &Photo) -> Result<RgbImage> {
             || a[0] > (src.width() - 1) as f64
             || a[1] > (src.height() - 1) as f64
         {
-            bail!("Roh mimo obrazka");
+            local_bail!("Crop corner outside the image", "Roh mimo obrazka");
         }
     }
     let mut sign = 0.0f64;
@@ -231,7 +242,10 @@ fn crop(src: &RgbImage, p: &Photo) -> Result<RgbImage> {
         let d = c[(i + 2) % 4];
         let cross = (b[0] - a[0]) * (d[1] - b[1]) - (b[1] - a[1]) * (d[0] - b[0]);
         if cross <= 0.01 || (sign != 0.0 && cross * sign <= 0.0) {
-            bail!("Rohy musia tvorit konvexny vyrez v poradi zlava hore v smere hodin");
+            local_bail!(
+                "Crop corners must form a convex polygon, clockwise from top left",
+                "Rohy musia tvorit konvexny vyrez v poradi zlava hore v smere hodin"
+            );
         }
         sign = cross;
     }
@@ -244,7 +258,7 @@ fn crop(src: &RgbImage, p: &Photo) -> Result<RgbImage> {
         .max(1.0) as u32
         + 1;
     if w as u64 * h as u64 > 100_000_000 {
-        bail!("Vyrez je prilis velky");
+        local_bail!("The crop is too large", "Vyrez je prilis velky");
     }
     let dst = RgbImage::from_fn(w, h, |x, y| {
         let u = x as f64 / (w - 1) as f64;
@@ -304,19 +318,11 @@ fn run() -> Result<()> {
     let mut args = env::args_os().skip(1);
     let input = match args.next() {
         Some(p) => p,
-        None if cfg!(windows) => {
-            let result=background_command("powershell.exe").args(["-NoProfile","-STA","-Command", "Add-Type -AssemblyName System.Windows.Forms; $d=New-Object System.Windows.Forms.OpenFileDialog; $d.Filter='Skeny|*.pdf;*.jpg;*.jpeg;*.png;*.tif;*.tiff;*.bmp;*.webp'; if($d.ShowDialog() -eq 'OK'){[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Write-Output $d.FileName}"]).output()?;
-            let path = String::from_utf8(result.stdout)?
-                .trim()
-                .trim_start_matches('\u{feff}')
-                .to_owned();
-            if path.is_empty() {
-                return Ok(());
-            }
-            path.into()
-        }
         None => {
-            bail!("Pouzitie: foto-delic VSTUP [--out PRIECINOK] [--plan plan.json] [--dpi 300]")
+            local_bail!(
+                "Usage: photo-splitter INPUT [--out DIRECTORY] [--plan plan.json] [--dpi 300]",
+                "Pouzitie: photo-splitter VSTUP [--out PRIECINOK] [--plan plan.json] [--dpi 300]"
+            )
         }
     };
     let input = PathBuf::from(input);
@@ -338,24 +344,40 @@ fn run() -> Result<()> {
                 prepare_ui = true;
                 no_open = true;
             }
-            "--out" => out = args.next().context("Chyba priecinok")?.into(),
-            "--plan" => plan = Some(PathBuf::from(args.next().context("Chyba plan")?)),
+            "--out" => {
+                out = args
+                    .next()
+                    .context(language::text(
+                        "Missing output directory",
+                        "Chyba priecinok",
+                    ))?
+                    .into()
+            }
+            "--plan" => {
+                plan = Some(PathBuf::from(
+                    args.next()
+                        .context(language::text("Missing plan file", "Chyba plan"))?,
+                ))
+            }
             "--dpi" => {
                 dpi = args
                     .next()
-                    .context("Chyba DPI")?
+                    .context(language::text("Missing DPI value", "Chyba DPI"))?
                     .to_str()
-                    .context("Neplatne DPI")?
+                    .context(language::text("Invalid DPI value", "Neplatne DPI"))?
                     .parse()?
             }
-            _ => bail!("Neznamy parameter: {:?}", a),
+            _ => local_bail!("Unknown option: {:?}", "Neznamy parameter: {:?}", a),
         }
     }
     if !(72..=1200).contains(&dpi) {
-        bail!("DPI musi byt 72 az 1200");
+        local_bail!("DPI must be between 72 and 1200", "DPI musi byt 72 az 1200");
     }
     if out.exists() && fs::read_dir(&out)?.next().is_some() {
-        bail!("Vystupny priecinok uz obsahuje subory. Vyber novy --out.");
+        local_bail!(
+            "The output directory already contains files. Choose a new --out directory.",
+            "Vystupny priecinok uz obsahuje subory. Vyber novy --out."
+        );
     }
     let temp = tempfile::tempdir()?;
     let mut orienter = orientation::Orienter::new(temp.path())?;
@@ -374,9 +396,13 @@ fn run() -> Result<()> {
         let result = background_command(info)
             .arg(&input)
             .output()
-            .context("Nedostupny PDF informacny nastroj")?;
+            .context(language::text(
+                "PDF information tool is unavailable",
+                "Nedostupny PDF informacny nastroj",
+            ))?;
         if !result.status.success() {
-            bail!(
+            local_bail!(
+                "Could not open PDF: {}",
                 "PDF sa nepodarilo otvorit: {}",
                 String::from_utf8_lossy(&result.stderr)
             );
@@ -387,7 +413,10 @@ fn run() -> Result<()> {
                 l.strip_prefix("Pages:")
                     .and_then(|n| n.trim().parse::<usize>().ok())
             })
-            .context("Nedostupny pocet stran PDF")?;
+            .context(language::text(
+                "Could not read the PDF page count",
+                "Nedostupny pocet stran PDF",
+            ))?;
         for i in 0..count {
             inputs.push(temp.path().join(format!("page-{:04}.png", i + 1)));
         }
@@ -395,14 +424,17 @@ fn run() -> Result<()> {
         inputs.push(input.clone());
     }
     if inputs.is_empty() {
-        bail!("Nenasli sa ziadne strany");
+        local_bail!("No pages found", "Nenasli sa ziadne strany");
     }
     let saved: Option<Plan> = plan
         .map(|p| -> Result<Plan> { Ok(serde_json::from_slice(&fs::read(p)?)?) })
         .transpose()?;
     if let Some(p) = &saved {
         if p.pages.len() != inputs.len() {
-            bail!("Pocet stran nezodpoveda planu");
+            local_bail!(
+                "The page count does not match the plan",
+                "Pocet stran nezodpoveda planu"
+            );
         }
     }
     fs::create_dir_all(&out)?;
@@ -434,7 +466,8 @@ fn run() -> Result<()> {
                 .arg(prefix)
                 .output()?;
             if !result.status.success() {
-                bail!(
+                local_bail!(
+                    "Page {}: {}",
                     "Strana {}: {}",
                     i + 1,
                     String::from_utf8_lossy(&result.stderr)
@@ -455,7 +488,8 @@ fn run() -> Result<()> {
         let mut photos = if let Some(p) = &saved {
             let pg = &p.pages[i];
             if pg.width != img.width() || pg.height != img.height() {
-                bail!(
+                local_bail!(
+                    "Page {} dimensions do not match the plan. Use the original DPI.",
                     "Rozmery strany {} nezodpovedaju planu. Pouzi povodne DPI.",
                     i + 1
                 );
@@ -464,7 +498,12 @@ fn run() -> Result<()> {
         } else {
             detect(&img)
         };
-        println!("Strana {}: {} fotiek", i + 1, photos.len());
+        local_println!(
+            "Page {}: {} photos",
+            "Strana {}: {} fotiek",
+            i + 1,
+            photos.len()
+        );
         let photo_count = photos.len();
         for (j, p) in photos.iter_mut().enumerate() {
             if prepare_ui {
@@ -507,7 +546,7 @@ fn run() -> Result<()> {
         let mut png = std::io::Cursor::new(Vec::new());
         DynamicImage::ImageRgb8(img.clone()).write_to(&mut png, image::ImageFormat::Png)?;
         pages.push(Page {
-            name: format!("Strana {}", i + 1),
+            name: format!("{} {}", language::text("Page", "Strana"), i + 1),
             width: img.width(),
             height: img.height(),
             data: STANDARD.encode(png.into_inner()),
@@ -519,11 +558,11 @@ fn run() -> Result<()> {
         serde_json::to_vec(&orientation_checks)?,
     )?;
     let data = serde_json::to_string(&pages)?;
-    let html = include_str!("review.html").replace("/*DATA*/[]", &data);
+    let html = include_str!("review.html").replace("/*DATA*/[]", &data).replace("/*L10N*/{}",&serde_json::json!({"lang":language::code(),"messages":language::catalog()[language::code()]["review"]}).to_string());
     let review = out.join("kontrola.html");
     fs::write(&review, html)?;
     let absolute_review = fs::canonicalize(&review)?;
-    println!("Kontrola: {}", absolute_review.display());
+    local_println!("Review: {}", "Kontrola: {}", absolute_review.display());
     if cfg!(windows) && !no_open {
         let display_path = absolute_review
             .to_string_lossy()
@@ -539,9 +578,15 @@ fn run() -> Result<()> {
             .spawn();
     }
     if saved.is_some() {
-        println!("Ulozenych {total} JPEG fotiek.");
+        local_println!(
+            "Saved {total} JPEG photos.",
+            "Ulozenych {total} JPEG fotiek."
+        );
     } else {
-        println!("Otvor kontrola.html, uprav vyrezy a otocenie, potom stiahni ZIP alebo plan.");
+        local_println!(
+            "Open kontrola.html to review crops and rotation, then download the ZIP or plan.",
+            "Otvor kontrola.html, uprav vyrezy a otocenie, potom stiahni ZIP alebo plan."
+        );
     }
     Ok(())
 }
@@ -565,11 +610,18 @@ fn launch_gui() -> Result<()> {
     let temp = tempfile::tempdir()?;
     let script = temp.path().join("foto-ui.ps1");
     // Windows PowerShell requires a BOM for UTF-8 Slovak strings.
-    fs::write(&script, format!("\u{feff}{}", include_str!("ui.ps1")))?;
+    let contents = format!(
+        "\u{feff}$script:catalog=@'\n{}\n'@ | ConvertFrom-Json\n{}\n{}",
+        include_str!("localization.json"),
+        include_str!("localization.ps1"),
+        include_str!("ui.ps1")
+    );
+    fs::write(&script, contents)?;
     let mut cmd = background_command("powershell.exe");
     cmd.args(["-NoProfile", "-STA", "-ExecutionPolicy", "Bypass", "-File"])
         .arg(script)
-        .env("FOTO_EXE", env::current_exe()?);
+        .env("FOTO_EXE", env::current_exe()?)
+        .env("PHOTOSPLITTER_LANG", language::code());
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -586,7 +638,7 @@ fn main() {
         return;
     }
     if let Err(e) = run() {
-        eprintln!("Chyba: {e:#}");
+        eprintln!("{}: {e:#}", language::text("Error", "Chyba"));
         std::process::exit(1);
     }
 }
